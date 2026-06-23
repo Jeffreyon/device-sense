@@ -3,7 +3,6 @@
 package main
 
 import (
-	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -20,29 +19,39 @@ func enableAnsiColors() {
 	setConsoleMode.Call(uintptr(handle), uintptr(mode|0x0004))
 }
 
-// psh writes the script to a temp file and runs it with -File so that
-// multiline scripts and special characters are passed reliably.
-func psh(script string) string {
-	tmp, err := os.CreateTemp("", "ds-*.ps1")
-	if err != nil {
-		return ""
-	}
-	defer os.Remove(tmp.Name())
-	tmp.WriteString(script)
-	tmp.Close()
-
-	out, _ := exec.Command(
+// psExe returns the full path to powershell.exe — avoids relying on PATH
+// which may be incomplete when launching a .exe by double-click.
+func psExe() string {
+	candidates := []string{
+		`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		`C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe`,
 		"powershell.exe",
+	}
+	for _, p := range candidates {
+		if _, err := exec.LookPath(p); err == nil {
+			return p
+		}
+	}
+	return "powershell.exe"
+}
+
+// psh pipes the script via stdin using -Command - which is the most reliable
+// way to pass multiline scripts without temp files or escaping issues.
+func psh(script string) string {
+	cmd := exec.Command(
+		psExe(),
 		"-NoProfile", "-NonInteractive",
 		"-ExecutionPolicy", "Bypass",
-		"-File", tmp.Name(),
-	).Output()
+		"-Command", "-",
+	)
+	cmd.Stdin = strings.NewReader(script)
+	out, _ := cmd.Output()
 	return strings.TrimSpace(strings.ReplaceAll(string(out), "\r", ""))
 }
 
-func parseKV(out string) map[string]string {
+func parseKV(raw string) map[string]string {
 	m := make(map[string]string)
-	for _, line := range strings.Split(out, "\n") {
+	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if idx := strings.Index(line, "="); idx > 0 {
 			m[line[:idx]] = strings.TrimSpace(line[idx+1:])
@@ -60,10 +69,10 @@ $reg = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0')
 "CORES=" + $cpu.NumberOfCores
 "THREADS=" + $cpu.NumberOfLogicalProcessors
 "SPEED=" + $cpu.MaxClockSpeed
-"GHZ=" + [math]::Round($cpu.MaxClockSpeed/1000,2)
-"ARCH=" + (switch($cpu.Architecture){0{"x86"} 9{"x64 (AMD64)"} 12{"ARM64"} default{"Unknown"}})
-"L2=" + [math]::Round($cpu.L2CacheSize/1024,1)
-"L3=" + [math]::Round($cpu.L3CacheSize/1024,1)
+"GHZ=" + [math]::Round($cpu.MaxClockSpeed / 1000, 2)
+"ARCH=" + (switch ($cpu.Architecture) { 0 { "x86" } 9 { "x64 (AMD64)" } 12 { "ARM64" } default { "Unknown" } })
+"L2=" + [math]::Round($cpu.L2CacheSize / 1024, 1)
+"L3=" + [math]::Round($cpu.L3CacheSize / 1024, 1)
 `)
 	kv := parseKV(raw)
 	return CPUResult{
@@ -80,15 +89,17 @@ $reg = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0')
 }
 
 func scanRAM() ([]RAMSlot, string) {
-	totalRaw := psh(`[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB,2)`)
+	totalRaw := psh(`[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)`)
 
 	raw := psh(`
 $i = 1
 foreach ($s in (Get-CimInstance Win32_PhysicalMemory)) {
-    $type = switch($s.SMBIOSMemoryType){20{"DDR"} 21{"DDR2"} 24{"DDR3"} 26{"DDR4"} 34{"DDR5"} default{"Unknown"}}
-    $mfr  = if($s.Manufacturer) { $s.Manufacturer.Trim() } else { "N/A" }
-    $part = if($s.PartNumber)   { $s.PartNumber.Trim()   } else { "N/A" }
-    "SLOT=" + $i + "|" + [math]::Round($s.Capacity/1GB,2) + "|" + $type + "|" + $s.Speed + "|" + $mfr + "|" + $part
+    $type = switch ($s.SMBIOSMemoryType) {
+        20 { "DDR" } 21 { "DDR2" } 24 { "DDR3" } 26 { "DDR4" } 34 { "DDR5" } default { "Unknown" }
+    }
+    $mfr  = if ($s.Manufacturer) { $s.Manufacturer.Trim() } else { "N/A" }
+    $part = if ($s.PartNumber)   { $s.PartNumber.Trim()   } else { "N/A" }
+    "SLOT=" + $i + "|" + [math]::Round($s.Capacity / 1GB, 2) + "|" + $type + "|" + $s.Speed + "|" + $mfr + "|" + $part
     $i++
 }
 `)
@@ -117,8 +128,8 @@ foreach ($s in (Get-CimInstance Win32_PhysicalMemory)) {
 func scanStorage() []Disk {
 	raw := psh(`
 foreach ($d in (Get-CimInstance Win32_DiskDrive)) {
-    $size   = if($d.Size)         { [math]::Round($d.Size/1GB,1)  } else { "N/A" }
-    $serial = if($d.SerialNumber) { $d.SerialNumber.Trim()         } else { "N/A" }
+    $size   = if ($d.Size)         { [math]::Round($d.Size / 1GB, 1) } else { "N/A" }
+    $serial = if ($d.SerialNumber) { $d.SerialNumber.Trim()           } else { "N/A" }
     "DISK=" + $d.Caption + "|" + $size + "|" + $d.InterfaceType + "|" + $serial
 }
 `)
@@ -145,8 +156,8 @@ foreach ($d in (Get-CimInstance Win32_DiskDrive)) {
 func scanGPU() []GPU {
 	raw := psh(`
 foreach ($g in (Get-CimInstance Win32_VideoController)) {
-    $vram = if($g.AdapterRAM -and $g.AdapterRAM -gt 0) {
-        [math]::Round($g.AdapterRAM/1MB,0).ToString() + " MB"
+    $vram = if ($g.AdapterRAM -and $g.AdapterRAM -gt 0) {
+        [math]::Round($g.AdapterRAM / 1MB, 0).ToString() + " MB"
     } else { "Shared / N/A" }
     "GPU=" + $g.Caption + "|" + $vram + "|" + $g.DriverVersion + "|" + $g.Status
 }
