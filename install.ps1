@@ -1,51 +1,54 @@
 # device-sense PowerShell installer
+# Downloads the pre-built .exe from GitHub Releases — no Go or bash required.
 # Usage: irm https://raw.githubusercontent.com/jeffreyon/device-sense/main/install.ps1 | iex
 
-$REPO_RAW   = "https://raw.githubusercontent.com/jeffreyon/device-sense/main"
-$INSTALL_DIR = "$HOME\.device-sense"
-$SCRIPT      = "$INSTALL_DIR\device-sense.sh"
+$REPO    = "jeffreyon/device-sense"
+$EXE     = "device-sense-windows.exe"
+$INSTALL = "$env:USERPROFILE\.device-sense"
+$TARGET  = "$INSTALL\device-sense.exe"
 
 Write-Host ""
 Write-Host "  Installing device-sense..." -ForegroundColor Cyan
 Write-Host ""
 
-# ── Check bash is available ────────────────────────────────────────────────────
-if (-not (Get-Command bash -ErrorAction SilentlyContinue)) {
-    Write-Host "  Error: bash not found. Install Git for Windows first:" -ForegroundColor Red
-    Write-Host "  https://git-scm.com/download/win" -ForegroundColor Yellow
+# ── Fetch latest release download URL ─────────────────────────────────────────
+$api = "https://api.github.com/repos/$REPO/releases/latest"
+try {
+    $release = Invoke-RestMethod -Uri $api -UseBasicParsing
+} catch {
+    Write-Host "  Error: could not reach GitHub API. Check your connection." -ForegroundColor Red
     exit 1
 }
 
-# ── Download script ────────────────────────────────────────────────────────────
-if (-not (Test-Path $INSTALL_DIR)) {
-    New-Item -ItemType Directory -Path $INSTALL_DIR | Out-Null
+$asset = $release.assets | Where-Object { $_.name -eq $EXE }
+if (-not $asset) {
+    Write-Host "  Error: no Windows binary found in the latest release." -ForegroundColor Red
+    Write-Host "  Make sure a release has been published at https://github.com/$REPO/releases" -ForegroundColor Yellow
+    exit 1
 }
 
-Invoke-WebRequest -Uri "$REPO_RAW/device-sense.sh" -OutFile $SCRIPT -UseBasicParsing
-Write-Host "  Downloaded to $SCRIPT" -ForegroundColor Green
-
-# ── Add function to PowerShell profile ────────────────────────────────────────
-$funcBlock = @"
-
-# device-sense — hardware verifier
-function device-sense { bash "$($SCRIPT -replace '\\','/')" }
-"@
-
-if (-not (Test-Path $PROFILE)) {
-    New-Item -ItemType File -Path $PROFILE -Force | Out-Null
+# ── Download ───────────────────────────────────────────────────────────────────
+if (-not (Test-Path $INSTALL)) {
+    New-Item -ItemType Directory -Path $INSTALL | Out-Null
 }
 
-if (-not (Select-String -Path $PROFILE -Pattern "device-sense" -Quiet -ErrorAction SilentlyContinue)) {
-    Add-Content -Path $PROFILE -Value $funcBlock
-    Write-Host "  Added 'device-sense' function to $PROFILE" -ForegroundColor Green
-} else {
-    Write-Host "  Profile already has device-sense — skipping" -ForegroundColor DarkGray
+Write-Host "  Downloading $($asset.name) ..." -ForegroundColor DarkGray
+Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $TARGET -UseBasicParsing
+Write-Host "  Saved to $TARGET" -ForegroundColor Green
+
+# ── Add to user PATH (permanent) ──────────────────────────────────────────────
+$userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+if ($userPath -notlike "*$INSTALL*") {
+    [Environment]::SetEnvironmentVariable("PATH", "$INSTALL;$userPath", "User")
+    $env:PATH = "$INSTALL;$env:PATH"
+    Write-Host "  Added $INSTALL to your PATH" -ForegroundColor Green
 }
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "  Done! Reload your profile then run it:" -ForegroundColor White
+Write-Host "  Done! Run it:" -ForegroundColor White
 Write-Host ""
-Write-Host "    . `$PROFILE" -ForegroundColor Yellow
 Write-Host "    device-sense" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "  (Open a new terminal if the command isn't found yet)" -ForegroundColor DarkGray
 Write-Host ""
