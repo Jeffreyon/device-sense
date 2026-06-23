@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:         # lets you click "Run workflow" from the Actions tab
 
 jobs:
   build:
@@ -36,10 +37,17 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: |
-          go build -ldflags="-s -w" -o device-sense-${{ matrix.os }}${{ matrix.ext }} .
+        run: go build -ldflags="-s -w" -o device-sense-${{ matrix.os }}${{ matrix.ext }} .
 
-      - name: Upload to release
+      - name: Upload artifact (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-sense-${{ matrix.os }}
+          path: device-sense-${{ matrix.os }}${{ matrix.ext }}
+
+      - name: Upload to release (tag runs)
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           files: device-sense-${{ matrix.os }}${{ matrix.ext }}
