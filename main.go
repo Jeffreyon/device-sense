@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -274,4 +276,7 @@ func main() {
 	fmt.Printf("  %s   WMI reads above query CPUID directly from the chip.%s\n", cDim, cReset)
 
 	drawSupportBanner()
+
+	fmt.Printf("  %sPress Enter to exit...%s\n\n", cDim, cReset)
+	bufio.NewReader(os.Stdin).ReadString('\n')
 }

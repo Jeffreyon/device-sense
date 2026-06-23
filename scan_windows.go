@@ -3,6 +3,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -16,13 +17,25 @@ func enableAnsiColors() {
 	handle, _ := syscall.GetStdHandle(syscall.STD_OUTPUT_HANDLE)
 	var mode uint32
 	getConsoleMode.Call(uintptr(handle), uintptr(unsafe.Pointer(&mode)))
-	// ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
 	setConsoleMode.Call(uintptr(handle), uintptr(mode|0x0004))
 }
 
+// psh writes the script to a temp file and runs it with -File so that
+// multiline scripts and special characters are passed reliably.
 func psh(script string) string {
+	tmp, err := os.CreateTemp("", "ds-*.ps1")
+	if err != nil {
+		return ""
+	}
+	defer os.Remove(tmp.Name())
+	tmp.WriteString(script)
+	tmp.Close()
+
 	out, _ := exec.Command(
-		"powershell", "-NoProfile", "-NonInteractive", "-Command", script,
+		"powershell.exe",
+		"-NoProfile", "-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-File", tmp.Name(),
 	).Output()
 	return strings.TrimSpace(strings.ReplaceAll(string(out), "\r", ""))
 }
@@ -40,7 +53,7 @@ func parseKV(out string) map[string]string {
 
 func scanCPU() CPUResult {
 	raw := psh(`
-$cpu = Get-WmiObject Win32_Processor
+$cpu = Get-CimInstance Win32_Processor
 $reg = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0').ProcessorNameString
 "REG=" + $reg.Trim()
 "WMI=" + $cpu.Name.Trim()
@@ -67,11 +80,11 @@ $reg = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0')
 }
 
 func scanRAM() ([]RAMSlot, string) {
-	totalRaw := psh(`[math]::Round((Get-WmiObject Win32_ComputerSystem).TotalPhysicalMemory/1GB,2)`)
+	totalRaw := psh(`[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB,2)`)
 
 	raw := psh(`
 $i = 1
-foreach ($s in (Get-WmiObject Win32_PhysicalMemory)) {
+foreach ($s in (Get-CimInstance Win32_PhysicalMemory)) {
     $type = switch($s.SMBIOSMemoryType){20{"DDR"} 21{"DDR2"} 24{"DDR3"} 26{"DDR4"} 34{"DDR5"} default{"Unknown"}}
     $mfr  = if($s.Manufacturer) { $s.Manufacturer.Trim() } else { "N/A" }
     $part = if($s.PartNumber)   { $s.PartNumber.Trim()   } else { "N/A" }
@@ -79,7 +92,6 @@ foreach ($s in (Get-WmiObject Win32_PhysicalMemory)) {
     $i++
 }
 `)
-
 	var slots []RAMSlot
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
@@ -104,9 +116,9 @@ foreach ($s in (Get-WmiObject Win32_PhysicalMemory)) {
 
 func scanStorage() []Disk {
 	raw := psh(`
-foreach ($d in (Get-WmiObject Win32_DiskDrive)) {
-    $size   = if($d.Size)         { [math]::Round($d.Size/1GB,1)   } else { "N/A" }
-    $serial = if($d.SerialNumber) { $d.SerialNumber.Trim()          } else { "N/A" }
+foreach ($d in (Get-CimInstance Win32_DiskDrive)) {
+    $size   = if($d.Size)         { [math]::Round($d.Size/1GB,1)  } else { "N/A" }
+    $serial = if($d.SerialNumber) { $d.SerialNumber.Trim()         } else { "N/A" }
     "DISK=" + $d.Caption + "|" + $size + "|" + $d.InterfaceType + "|" + $serial
 }
 `)
@@ -132,7 +144,7 @@ foreach ($d in (Get-WmiObject Win32_DiskDrive)) {
 
 func scanGPU() []GPU {
 	raw := psh(`
-foreach ($g in (Get-WmiObject Win32_VideoController)) {
+foreach ($g in (Get-CimInstance Win32_VideoController)) {
     $vram = if($g.AdapterRAM -and $g.AdapterRAM -gt 0) {
         [math]::Round($g.AdapterRAM/1MB,0).ToString() + " MB"
     } else { "Shared / N/A" }
@@ -161,8 +173,8 @@ foreach ($g in (Get-WmiObject Win32_VideoController)) {
 
 func scanSystem() SysInfo {
 	raw := psh(`
-$cs  = Get-WmiObject Win32_ComputerSystem
-$bio = Get-WmiObject Win32_BIOS
+$cs  = Get-CimInstance Win32_ComputerSystem
+$bio = Get-CimInstance Win32_BIOS
 "MFR="     + $cs.Manufacturer
 "MODEL="   + $cs.Model
 "BIOSVER=" + $bio.SMBIOSBIOSVersion
