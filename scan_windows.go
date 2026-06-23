@@ -3,9 +3,11 @@
 package main
 
 import (
+	"encoding/base64"
 	"os/exec"
 	"strings"
 	"syscall"
+	"unicode/utf16"
 	"unsafe"
 )
 
@@ -22,12 +24,11 @@ func enableAnsiColors() {
 // psExe returns the full path to powershell.exe — avoids relying on PATH
 // which may be incomplete when launching a .exe by double-click.
 func psExe() string {
-	candidates := []string{
+	for _, p := range []string{
 		`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
 		`C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe`,
 		"powershell.exe",
-	}
-	for _, p := range candidates {
+	} {
 		if _, err := exec.LookPath(p); err == nil {
 			return p
 		}
@@ -35,17 +36,27 @@ func psExe() string {
 	return "powershell.exe"
 }
 
-// psh pipes the script via stdin using -Command - which is the most reliable
-// way to pass multiline scripts without temp files or escaping issues.
+// psh encodes the script as UTF-16LE + base64 and passes it via -EncodedCommand.
+// This is the most reliable way to hand multiline scripts to PowerShell from Go —
+// no temp files, no stdin buffering, no escaping issues.
 func psh(script string) string {
-	cmd := exec.Command(
+	// prepend UTF-8 output directive so Go receives clean UTF-8 bytes
+	full := "$OutputEncoding=[System.Text.Encoding]::UTF8\n[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n$ErrorActionPreference='SilentlyContinue'\n" + script
+
+	runes := utf16.Encode([]rune(full))
+	b := make([]byte, len(runes)*2)
+	for i, r := range runes {
+		b[i*2] = byte(r)
+		b[i*2+1] = byte(r >> 8)
+	}
+	encoded := base64.StdEncoding.EncodeToString(b)
+
+	out, _ := exec.Command(
 		psExe(),
 		"-NoProfile", "-NonInteractive",
 		"-ExecutionPolicy", "Bypass",
-		"-Command", "-",
-	)
-	cmd.Stdin = strings.NewReader(script)
-	out, _ := cmd.Output()
+		"-EncodedCommand", encoded,
+	).Output()
 	return strings.TrimSpace(strings.ReplaceAll(string(out), "\r", ""))
 }
 
@@ -64,15 +75,17 @@ func scanCPU() CPUResult {
 	raw := psh(`
 $cpu = Get-CimInstance Win32_Processor
 $reg = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0').ProcessorNameString
-"REG=" + $reg.Trim()
-"WMI=" + $cpu.Name.Trim()
-"CORES=" + $cpu.NumberOfCores
-"THREADS=" + $cpu.NumberOfLogicalProcessors
-"SPEED=" + $cpu.MaxClockSpeed
-"GHZ=" + [math]::Round($cpu.MaxClockSpeed / 1000, 2)
-"ARCH=" + (switch ($cpu.Architecture) { 0 { "x86" } 9 { "x64 (AMD64)" } 12 { "ARM64" } default { "Unknown" } })
-"L2=" + [math]::Round($cpu.L2CacheSize / 1024, 1)
-"L3=" + [math]::Round($cpu.L3CacheSize / 1024, 1)
+$a   = $cpu.Architecture
+$arch = if ($a -eq 0) { "x86" } elseif ($a -eq 9) { "x64 (AMD64)" } elseif ($a -eq 12) { "ARM64" } else { "Unknown" }
+Write-Output ("REG="     + $reg.Trim())
+Write-Output ("WMI="     + $cpu.Name.Trim())
+Write-Output ("CORES="   + $cpu.NumberOfCores)
+Write-Output ("THREADS=" + $cpu.NumberOfLogicalProcessors)
+Write-Output ("SPEED="   + $cpu.MaxClockSpeed)
+Write-Output ("GHZ="     + [math]::Round($cpu.MaxClockSpeed / 1000, 2))
+Write-Output ("ARCH="    + $arch)
+Write-Output ("L2="      + [math]::Round($cpu.L2CacheSize / 1024, 1))
+Write-Output ("L3="      + [math]::Round($cpu.L3CacheSize / 1024, 1))
 `)
 	kv := parseKV(raw)
 	return CPUResult{
@@ -89,17 +102,17 @@ $reg = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0')
 }
 
 func scanRAM() ([]RAMSlot, string) {
-	totalRaw := psh(`[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)`)
+	totalRaw := psh(`Write-Output ([math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2))`)
 
 	raw := psh(`
 $i = 1
 foreach ($s in (Get-CimInstance Win32_PhysicalMemory)) {
-    $type = switch ($s.SMBIOSMemoryType) {
-        20 { "DDR" } 21 { "DDR2" } 24 { "DDR3" } 26 { "DDR4" } 34 { "DDR5" } default { "Unknown" }
-    }
+    $t = $s.SMBIOSMemoryType
+    $type = if ($t -eq 20) { "DDR" } elseif ($t -eq 21) { "DDR2" } elseif ($t -eq 24) { "DDR3" } elseif ($t -eq 26) { "DDR4" } elseif ($t -eq 34) { "DDR5" } else { "Unknown" }
     $mfr  = if ($s.Manufacturer) { $s.Manufacturer.Trim() } else { "N/A" }
     $part = if ($s.PartNumber)   { $s.PartNumber.Trim()   } else { "N/A" }
-    "SLOT=" + $i + "|" + [math]::Round($s.Capacity / 1GB, 2) + "|" + $type + "|" + $s.Speed + "|" + $mfr + "|" + $part
+    $cap  = [math]::Round($s.Capacity / 1GB, 2)
+    Write-Output ("SLOT=" + $i + "|" + $cap + "|" + $type + "|" + $s.Speed + "|" + $mfr + "|" + $part)
     $i++
 }
 `)
@@ -128,9 +141,11 @@ foreach ($s in (Get-CimInstance Win32_PhysicalMemory)) {
 func scanStorage() []Disk {
 	raw := psh(`
 foreach ($d in (Get-CimInstance Win32_DiskDrive)) {
-    $size   = if ($d.Size)         { [math]::Round($d.Size / 1GB, 1) } else { "N/A" }
-    $serial = if ($d.SerialNumber) { $d.SerialNumber.Trim()           } else { "N/A" }
-    "DISK=" + $d.Caption + "|" + $size + "|" + $d.InterfaceType + "|" + $serial
+    $size = "N/A"
+    if ($d.Size -gt 0) { $size = [math]::Round($d.Size / 1GB, 1) }
+    $serial = if ($d.SerialNumber) { $d.SerialNumber.Trim() } else { "N/A" }
+    $iface  = if ($d.InterfaceType) { $d.InterfaceType } else { "N/A" }
+    Write-Output ("DISK=" + $d.Caption + "|" + $size + "|" + $iface + "|" + $serial)
 }
 `)
 	var disks []Disk
@@ -156,10 +171,13 @@ foreach ($d in (Get-CimInstance Win32_DiskDrive)) {
 func scanGPU() []GPU {
 	raw := psh(`
 foreach ($g in (Get-CimInstance Win32_VideoController)) {
-    $vram = if ($g.AdapterRAM -and $g.AdapterRAM -gt 0) {
-        [math]::Round($g.AdapterRAM / 1MB, 0).ToString() + " MB"
-    } else { "Shared / N/A" }
-    "GPU=" + $g.Caption + "|" + $vram + "|" + $g.DriverVersion + "|" + $g.Status
+    $vram = "Shared / N/A"
+    if ($g.AdapterRAM -and $g.AdapterRAM -gt 0) {
+        $vram = [math]::Round($g.AdapterRAM / 1MB, 0).ToString() + " MB"
+    }
+    $driver = if ($g.DriverVersion) { $g.DriverVersion } else { "N/A" }
+    $status = if ($g.Status)        { $g.Status }        else { "N/A" }
+    Write-Output ("GPU=" + $g.Caption + "|" + $vram + "|" + $driver + "|" + $status)
 }
 `)
 	var gpus []GPU
@@ -186,11 +204,11 @@ func scanSystem() SysInfo {
 	raw := psh(`
 $cs  = Get-CimInstance Win32_ComputerSystem
 $bio = Get-CimInstance Win32_BIOS
-"MFR="     + $cs.Manufacturer
-"MODEL="   + $cs.Model
-"BIOSVER=" + $bio.SMBIOSBIOSVersion
-"BIOSMFR=" + $bio.Manufacturer
-"SERIAL="  + $bio.SerialNumber
+Write-Output ("MFR="     + $cs.Manufacturer)
+Write-Output ("MODEL="   + $cs.Model)
+Write-Output ("BIOSVER=" + $bio.SMBIOSBIOSVersion)
+Write-Output ("BIOSMFR=" + $bio.Manufacturer)
+Write-Output ("SERIAL="  + $bio.SerialNumber)
 `)
 	kv := parseKV(raw)
 	return SysInfo{
