@@ -1,53 +1,100 @@
 #!/bin/bash
-# device-sense installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/jeffreyon/device-sense/main/install.sh | bash
+# device-sense universal installer
+# Detects OS, downloads the right binary, adds it to PATH.
+#
+# macOS / Linux:
+#   curl -fsSL https://raw.githubusercontent.com/jeffreyon/device-sense/main/install.sh | bash
+#
+# Windows (Git Bash or WSL):
+#   curl -fsSL https://raw.githubusercontent.com/jeffreyon/device-sense/main/install.sh | bash
+#
+# Windows (PowerShell — only if you have no bash at all):
+#   irm https://raw.githubusercontent.com/jeffreyon/device-sense/main/install.ps1 | iex
 
-REPO_RAW="https://raw.githubusercontent.com/jeffreyon/device-sense/main"
+REPO="jeffreyon/device-sense"
 INSTALL_DIR="$HOME/bin"
-CMD_NAME="device-sense"
 
 echo ""
-echo "  Installing device-sense..."
+echo "  device-sense installer"
 echo ""
 
-# ── Create ~/bin if it doesn't exist ──────────────────────────────────────────
-mkdir -p "$INSTALL_DIR"
+# ── Detect OS ─────────────────────────────────────────────────────────────────
+OS_RAW="$(uname -s)"
+case "$OS_RAW" in
+    Darwin)              OS="macos";   ASSET="device-sense-macos"      ; EXT=""     ;;
+    Linux)               OS="linux";   ASSET="device-sense-linux"      ; EXT=""     ;;
+    MINGW*|MSYS*|CYGWIN*) OS="windows"; ASSET="device-sense-windows.exe"; EXT=".exe" ;;
+    *)
+        echo "  Unsupported OS: $OS_RAW"
+        echo "  Visit https://github.com/$REPO/releases to download manually."
+        exit 1
+        ;;
+esac
 
-# ── Download the script ────────────────────────────────────────────────────────
+echo "  Detected: $OS"
+
+# ── Fetch latest release URL for the right binary ─────────────────────────────
+API="https://api.github.com/repos/$REPO/releases/latest"
+
 if command -v curl &>/dev/null; then
-    curl -fsSL "$REPO_RAW/device-sense.sh" -o "$INSTALL_DIR/$CMD_NAME"
+    DOWNLOAD_URL=$(curl -fsSL "$API" | grep "browser_download_url" | grep "$ASSET" | cut -d '"' -f 4)
 elif command -v wget &>/dev/null; then
-    wget -qO "$INSTALL_DIR/$CMD_NAME" "$REPO_RAW/device-sense.sh"
+    DOWNLOAD_URL=$(wget -qO- "$API" | grep "browser_download_url" | grep "$ASSET" | cut -d '"' -f 4)
 else
-    echo "  Error: curl or wget is required. Install either and try again."
+    echo "  Error: curl or wget is required."
     exit 1
 fi
 
-chmod +x "$INSTALL_DIR/$CMD_NAME"
+if [ -z "$DOWNLOAD_URL" ]; then
+    echo "  Error: no release found for $OS."
+    echo "  Make sure a release exists at https://github.com/$REPO/releases"
+    exit 1
+fi
 
-# ── Add ~/bin to PATH if it isn't already ─────────────────────────────────────
-add_to_path() {
+# ── Download binary ───────────────────────────────────────────────────────────
+mkdir -p "$INSTALL_DIR"
+TARGET="$INSTALL_DIR/device-sense$EXT"
+
+echo "  Downloading $ASSET..."
+if command -v curl &>/dev/null; then
+    curl -fsSL "$DOWNLOAD_URL" -o "$TARGET"
+else
+    wget -qO "$TARGET" "$DOWNLOAD_URL"
+fi
+
+chmod +x "$TARGET"
+echo "  Saved to $TARGET"
+
+# ── On Windows (Git Bash), also create a device-sense.cmd wrapper so it works
+# ── in plain cmd.exe terminals opened after installation ──────────────────────
+if [ "$OS" = "windows" ]; then
+    CMD_WRAPPER="$INSTALL_DIR/device-sense.cmd"
+    printf '@echo off\n"%~dp0device-sense.exe" %%*\n' > "$CMD_WRAPPER"
+fi
+
+# ── Add ~/bin to PATH ─────────────────────────────────────────────────────────
+add_to_rc() {
     local rc="$1"
-    if [ -f "$rc" ] && grep -q 'device-sense' "$rc" 2>/dev/null; then
-        return  # already added
-    fi
+    [ -f "$rc" ] && grep -q 'device-sense' "$rc" 2>/dev/null && return
     printf '\n# added by device-sense installer\nexport PATH="$HOME/bin:$PATH"\n' >> "$rc"
 }
 
 if [[ ":$PATH:" != *":$HOME/bin:"* ]]; then
-    # cover both .bashrc and .bash_profile so it works in login + interactive shells
-    add_to_path "$HOME/.bashrc"
-    add_to_path "$HOME/.bash_profile"
-    # make it available in the current session immediately
+    add_to_rc "$HOME/.bashrc"
+    add_to_rc "$HOME/.bash_profile"
+    add_to_rc "$HOME/.zshrc"
     export PATH="$HOME/bin:$PATH"
-    echo "  Added ~/bin to PATH in ~/.bashrc and ~/.bash_profile"
+    echo "  Added ~/bin to PATH"
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
-echo "  device-sense installed to $INSTALL_DIR/$CMD_NAME"
 echo ""
-echo "  Run it now:"
+echo "  Done! Run:"
+echo ""
 echo "    device-sense"
 echo ""
-echo "  (If the command isn't found, restart your terminal or run:  source ~/.bashrc)"
+if [ "$OS" = "windows" ]; then
+    echo "  On Windows: works in Git Bash, WSL, and cmd.exe (new terminal)"
+fi
+echo "  (Open a new terminal if the command isn't found yet)"
 echo ""
