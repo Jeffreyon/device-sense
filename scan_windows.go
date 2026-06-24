@@ -160,7 +160,7 @@ foreach ($d in (Get-CimInstance Win32_DiskDrive)) {
 		}
 		disks = append(disks, Disk{
 			Caption:   parts[0],
-			SizeGB:    parts[1],
+			Size:      parts[1] + " GB",
 			Interface: parts[2],
 			Serial:    parts[3],
 		})

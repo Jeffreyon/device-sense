@@ -162,24 +162,27 @@ func main() {
 	// ── CPU ──────────────────────────────────────────────────────────────────
 	section("CPU VERIFICATION")
 
-	sp := newSpinner("Reading registry label (what Windows shows you)...")
-	// trigger the registry read concurrently with the spinner
+	sp := newSpinner("Reading CPU info...")
 	type cpuResult struct{ r CPUResult }
 	cpuCh := make(chan cpuResult, 1)
 	go func() { cpuCh <- cpuResult{scanCPU()} }()
 	cpu := (<-cpuCh).r
 	sp.stop()
 
-	reveal(fmt.Sprintf("  Shown in Settings : %s%s%s", cYellow, cpu.RegistryName, cReset))
-	reveal(fmt.Sprintf("  Hardware (WMI)    : %s%s%s", cGreen, cpu.WMIName, cReset))
-	fmt.Println()
-
-	if cpu.RegistryName == cpu.WMIName {
-		reveal(fmt.Sprintf("  Status            : %s✓  Match — no tampering detected%s", cGreen, cReset))
+	if cpu.SkipRegistryCheck {
+		reveal(fmt.Sprintf("  CPU               : %s%s%s", cGreen, cpu.WMIName, cReset))
+		reveal(fmt.Sprintf("  %sRegistry check: Windows-only feature%s", cDim, cReset))
 	} else {
-		reveal(fmt.Sprintf("  Status            : %s⚠  MISMATCH! Description has been altered!%s", cRed, cReset))
-		reveal(fmt.Sprintf("  %s     Real CPU differs from what Windows Settings shows.%s", cRed, cReset))
-		mismatch = true
+		reveal(fmt.Sprintf("  Shown in Settings : %s%s%s", cYellow, cpu.RegistryName, cReset))
+		reveal(fmt.Sprintf("  Hardware (WMI)    : %s%s%s", cGreen, cpu.WMIName, cReset))
+		fmt.Println()
+		if cpu.RegistryName == cpu.WMIName {
+			reveal(fmt.Sprintf("  Status            : %s✓  Match — no tampering detected%s", cGreen, cReset))
+		} else {
+			reveal(fmt.Sprintf("  Status            : %s⚠  MISMATCH! Description has been altered!%s", cRed, cReset))
+			reveal(fmt.Sprintf("  %s     Real CPU differs from what Windows Settings shows.%s", cRed, cReset))
+			mismatch = true
+		}
 	}
 
 	fmt.Println()
@@ -211,9 +214,12 @@ func main() {
 	disks := scanStorage()
 	sp.stop()
 
+	if len(disks) == 0 {
+		reveal(fmt.Sprintf("  %sNo drives detected%s", cDim, cReset))
+	}
 	for _, d := range disks {
 		reveal(fmt.Sprintf("  Drive  : %s", d.Caption))
-		reveal(fmt.Sprintf("  Size   : %s GB  |  Interface: %s  |  Serial: %s", d.SizeGB, d.Interface, d.Serial))
+		reveal(fmt.Sprintf("  Size   : %s  |  Interface: %s  |  Serial: %s", d.Size, d.Interface, d.Serial))
 		fmt.Println()
 	}
 
@@ -224,9 +230,16 @@ func main() {
 	gpus := scanGPU()
 	sp.stop()
 
+	if len(gpus) == 0 {
+		reveal(fmt.Sprintf("  %sNo GPU detected%s", cDim, cReset))
+	}
 	for _, g := range gpus {
 		reveal(fmt.Sprintf("  GPU    : %s", g.Name))
-		reveal(fmt.Sprintf("  VRAM   : %s  |  Driver: %s  |  Status: %s", g.VRAM, g.Driver, g.Status))
+		if g.Status != "" && g.Status != "—" {
+			reveal(fmt.Sprintf("  %s%s%s", cDim, g.Status, cReset))
+		} else {
+			reveal(fmt.Sprintf("  VRAM   : %s  |  Driver: %s  |  Status: %s", g.VRAM, g.Driver, g.Status))
+		}
 		fmt.Println()
 	}
 
@@ -247,7 +260,17 @@ func main() {
 	fmt.Println()
 	time.Sleep(400 * time.Millisecond)
 
-	if mismatch {
+	if cpu.SkipRegistryCheck {
+		for _, line := range []string{
+			fmt.Sprintf("%s%s  ╔══════════════════════════════════════════════════════╗%s", cGreen, cBold, cReset),
+			fmt.Sprintf("%s%s  ║  ✓  Hardware info read successfully.                 ║%s", cGreen, cBold, cReset),
+			fmt.Sprintf("%s%s  ║  Registry tamper check is Windows-only.              ║%s", cGreen, cBold, cReset),
+			fmt.Sprintf("%s%s  ╚══════════════════════════════════════════════════════╝%s", cGreen, cBold, cReset),
+		} {
+			time.Sleep(60 * time.Millisecond)
+			fmt.Println(line)
+		}
+	} else if mismatch {
 		for _, line := range []string{
 			fmt.Sprintf("%s%s  ╔══════════════════════════════════════════════════════╗%s", cRed, cBold, cReset),
 			fmt.Sprintf("%s%s  ║  ⚠  WARNING: Spec mismatch detected!                ║%s", cRed, cBold, cReset),
@@ -270,10 +293,12 @@ func main() {
 		}
 	}
 
-	fmt.Println()
-	fmt.Printf("  %sHKLM\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0%s\n", cDim, cReset)
-	fmt.Printf("  %s└─ just a display string, editable by any admin.%s\n", cDim, cReset)
-	fmt.Printf("  %s   WMI reads above query CPUID directly from the chip.%s\n", cDim, cReset)
+	if !cpu.SkipRegistryCheck {
+		fmt.Println()
+		fmt.Printf("  %sHKLM\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0%s\n", cDim, cReset)
+		fmt.Printf("  %s└─ just a display string, editable by any admin.%s\n", cDim, cReset)
+		fmt.Printf("  %s   WMI reads above query CPUID directly from the chip.%s\n", cDim, cReset)
+	}
 
 	drawSupportBanner()
 
