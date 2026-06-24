@@ -32,6 +32,15 @@ if (-not (Test-Path $INSTALL)) {
     New-Item -ItemType Directory -Path $INSTALL | Out-Null
 }
 
+# Remove stale wrappers from older bash-based installs that shadow the .exe
+foreach ($stale in @("device-sense.cmd", "device-sense.bat", "device-sense.sh", "device-sense")) {
+    $path = "$INSTALL\$stale"
+    if (Test-Path $path) {
+        Remove-Item $path -Force
+        Write-Host "  Removed old file: $stale" -ForegroundColor DarkGray
+    }
+}
+
 Write-Host "  Downloading $($asset.name) ..." -ForegroundColor DarkGray
 Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $TARGET -UseBasicParsing
 Write-Host "  Saved to $TARGET" -ForegroundColor Green
