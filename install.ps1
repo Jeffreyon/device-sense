@@ -45,6 +45,16 @@ Write-Host "  Downloading $($asset.name) ..." -ForegroundColor DarkGray
 Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $TARGET -UseBasicParsing
 Write-Host "  Saved to $TARGET" -ForegroundColor Green
 
+# ── Remove stale PowerShell profile function (from old bash-based install) ────
+if (Test-Path $PROFILE) {
+    $prof = Get-Content $PROFILE
+    $cleaned = $prof | Where-Object { $_ -notmatch 'device-sense' }
+    if ($cleaned.Count -ne $prof.Count) {
+        $cleaned | Set-Content $PROFILE
+        Write-Host "  Removed old profile function from $PROFILE" -ForegroundColor DarkGray
+    }
+}
+
 # ── Add to user PATH (permanent) ──────────────────────────────────────────────
 $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
 if ($userPath -notlike "*$INSTALL*") {
